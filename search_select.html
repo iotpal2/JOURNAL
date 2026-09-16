@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style>
+    [hidden] { display: none !important; }
+
+    /* Popover positioning is set up per-instance via inline CSS variables */
+    .autocomplete-popover {
+      position-anchor: var(--ac-anchor);
+      position-area: bottom span-right;
+      width: anchor-size(width);
+      max-height: 14rem;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .autocomplete-option.is-active > button {
+      background-color: var(--color-base-300, #e5e5e5);
+      color: var(--color-base-content, #000);
+    }
+  </style>
+</head>
+<body>
+  <div class="p-4 space-y-6">
+
+    <!-- Instance 1 -->
+    <div data-autocomplete>
+      <input
+        type="text"
+        class="autocomplete-input input w-full"
+        placeholder="Type a name"
+        autocomplete="off"
+        role="combobox"
+        aria-expanded="false"
+      />
+      <ul class="autocomplete-popover dropdown menu w-full rounded-box bg-base-100 shadow-sm my-2" popover>
+        <li class="autocomplete-option" data-value="Tom"><button type="button">Tom</button></li>
+        <li class="autocomplete-option" data-value="Jerry"><button type="button">Jerry</button></li>
+        <li class="autocomplete-option" data-value="Henry"><button type="button">Henry</button></li>
+        <li class="autocomplete-option" data-value="Adam"><button type="button">Adam</button></li>
+        <li class="autocomplete-option" data-value="Johan"><button type="button">Johan</button></li>
+      </ul>
+    </div>
+
+    <!-- Instance 2 -->
+    <div data-autocomplete>
+      <input
+        type="text"
+        class="autocomplete-input input w-full"
+        placeholder="Type a fruit"
+        autocomplete="off"
+        role="combobox"
+        aria-expanded="false"
+      />
+      <ul class="autocomplete-popover dropdown menu w-full rounded-box bg-base-100 shadow-sm my-2" popover>
+        <li class="autocomplete-option" data-value="Apple"><button type="button">Apple</button></li>
+        <li class="autocomplete-option" data-value="Apricot"><button type="button">Apricot</button></li>
+        <li class="autocomplete-option" data-value="Banana"><button type="button">Banana</button></li>
+        <li class="autocomplete-option" data-value="Cherry"><button type="button">Cherry</button></li>
+        <li class="autocomplete-option" data-value="Grape"><button type="button">Grape</button></li>
+      </ul>
+    </div>
+
+  </div>
+
+  <script>
+  (() => {
+    /* Unique anchor-name generator for CSS anchor positioning */
+    let anchorCounter = 0;
+    const nextAnchorName = () => `--ac-anchor-${++anchorCounter}`;
+
+    class AutocompleteSelect {
+      /**
+       * @param {HTMLElement} root - container holding the input + popover
+       * @param {object} [opts]
+       * @param {string} [opts.inputSelector=".autocomplete-input"]
+       * @param {string} [opts.popoverSelector=".autocomplete-popover"]
+       * @param {string} [opts.optionSelector=".autocomplete-option"]
+       * @param {string} [opts.valueAttr="data-value"]
+       * @param {Function} [opts.onSelect] - called with (value, optionEl)
+       */
+      constructor(root, opts = {}) {
+        this.root            = root;
+        this.inputSelector   = opts.inputSelector   ?? ".autocomplete-input";
+        this.popoverSelector = opts.popoverSelector ?? ".autocomplete-popover";
+        this.optionSelector  = opts.optionSelector  ?? ".autocomplete-option";
+        this.valueAttr       = opts.valueAttr       ?? "data-value";
+        this.onSelect        = opts.onSelect        ?? null;
+
+        this.input   = root.querySelector(this.inputSelector);
+        this.popover = root.querySelector(this.popoverSelector);
+        if (!this.input || !this.popover) {
+          console.warn("AutocompleteSelect: input or popover not found in", root);
+          return;
+        }
+
+        this.highlightedIndex = -1;
+        this.suppressOpen     = false;
+        this.wasOpenOnDown    = false;
+
+        this._setupAnchor();
+        this._bindEvents();
+      }
+
+      /* ---------- setup ---------- */
+
+      _setupAnchor() {
+        // Give the input a unique anchor-name and wire it into the popover.
+        const anchorName = nextAnchorName();
+        this.input.style.anchorName = anchorName;
+        this.popover.style.setProperty("--ac-anchor", anchorName);
+
+        // Link aria attributes
+        if (!this.popover.id) {
+          this.popover.id = `ac-popover-${anchorCounter}`;
+        }
+        this.input.setAttribute("aria-controls", this.popover.id);
+        this.input.setAttribute("aria-expanded", "false");
+      }
+
+      _bindEvents() {
+        this.input.addEventListener("keydown",   this._onKeyDown.bind(this));
+        this.input.addEventListener("input",     this._onInput.bind(this));
+        this.input.addEventListener("focus",     () => this.show());
+        this.input.addEventListener("pointerdown", () => { this.wasOpenOnDown = this.isOpen(); });
+        this.input.addEventListener("click", () => {
+          if (this.wasOpenOnDown) this.hide();
+          else this.show();
+        });
+
+        this.popover.addEventListener("toggle", (e) => {
+          const open = e.newState === "open";
+          this.input.setAttribute("aria-expanded", open ? "true" : "false");
+          if (!open) this._setHighlight(-1);
+        });
+
+        // Delegate clicks to option buttons (works even if options change later)
+        this.popover.addEventListener("click", (e) => {
+          const btn = e.target.closest("button");
+          if (!btn) return;
+          const li = btn.closest(this.optionSelector);
+          if (!li) return;
+          this.select(li.getAttribute(this.valueAttr));
+        });
+      }
+
+      /* ---------- helpers ---------- */
+
+      _allOptions() {
+        return Array.from(this.popover.querySelectorAll(this.optionSelector));
+      }
+
+      _visibleOptions() {
+        return this._allOptions().filter((li) => !li.hidden);
+      }
+
+      isOpen() {
+        return this.popover.matches(":popover-open");
+      }
+
+      /* ---------- public API ---------- */
+
+      show() {
+        if (this.isOpen() || this.suppressOpen) return;
+        this.popover.showPopover();
+      }
+
+      hide() {
+        if (this.isOpen()) this.popover.hidePopover();
+        this._setHighlight(-1);
+      }
+
+      select(value) {
+        if (value == null) return;
+        this.input.value = value;
+
+        const optionEl = this._allOptions()
+          .find((li) => li.getAttribute(this.valueAttr) === value) || null;
+
+        if (typeof this.onSelect === "function") {
+          this.onSelect(value, optionEl);
+        }
+
+        // Prevent the focus handler from immediately reopening the popover
+        this.suppressOpen = true;
+        this.hide();
+        this.input.focus();
+        queueMicrotask(() => { this.suppressOpen = false; });
+      }
+
+      /* ---------- highlight ---------- */
+
+      _setHighlight(index) {
+        const options = this._visibleOptions();
+
+        for (const li of this._allOptions()) {
+          li.classList.remove("is-active");
+          li.setAttribute("aria-selected", "false");
+        }
+
+        if (index < 0 || index >= options.length) {
+          this.highlightedIndex = -1;
+          return;
+        }
+
+        this.highlightedIndex = index;
+        const li = options[index];
+        li.classList.add("is-active");
+        li.setAttribute("aria-selected", "true");
+        li.scrollIntoView({ block: "nearest" });
+      }
+
+      /* ---------- filtering ---------- */
+
+      _onInput() {
+        this.show();
+
+        const search = this.input.value.trim().toLowerCase();
+        for (const li of this._allOptions()) {
+          const value = (li.getAttribute(this.valueAttr) || "").toLowerCase();
+          li.hidden = search !== "" && !value.includes(search);
+        }
+
+        this._setHighlight(-1);
+      }
+
+      /* ---------- keyboard ---------- */
+
+      _onKeyDown(e) {
+        const options = this._visibleOptions();
+
+        switch (e.key) {
+          case "ArrowDown": {
+            e.preventDefault();
+            if (!options.length) break;
+            if (!this.isOpen()) {
+              this.show();
+              this._setHighlight(0);
+            } else {
+              this._setHighlight(
+                this.highlightedIndex >= options.length - 1 ? 0 : this.highlightedIndex + 1
+              );
+            }
+            break;
+          }
+
+          case "ArrowUp": {
+            e.preventDefault();
+            if (!options.length) break;
+            if (!this.isOpen()) {
+              this.show();
+              this._setHighlight(options.length - 1);
+            } else {
+              this._setHighlight(
+                this.highlightedIndex <= 0 ? options.length - 1 : this.highlightedIndex - 1
+              );
+            }
+            break;
+          }
+
+          case "Home": {
+            if (!this.isOpen()) break;
+            e.preventDefault();
+            this._setHighlight(0);
+            break;
+          }
+
+          case "End": {
+            if (!this.isOpen()) break;
+            e.preventDefault();
+            this._setHighlight(options.length - 1);
+            break;
+          }
+
+          case "Enter": {
+            // Select highlighted option, or fall back to the first visible one.
+            if (this.isOpen() && options.length) {
+              e.preventDefault();
+              const target = (this.highlightedIndex >= 0 && options[this.highlightedIndex])
+                ? options[this.highlightedIndex]
+                : options[0];
+              this.select(target.getAttribute(this.valueAttr));
+            }
+            break;
+          }
+
+          case "Tab": {
+            this.hide();
+            break;
+          }
+        }
+      }
+    }
+
+    /* ---------- auto-init ---------- */
+
+    const initialized = new WeakSet();
+
+    function initAutocomplete(root, opts) {
+      if (initialized.has(root)) return root._autocompleteInstance;
+      const instance = new AutocompleteSelect(root, opts);
+      root._autocompleteInstance = instance;
+      initialized.add(root);
+      return instance;
+    }
+
+    function initAll(scope = document) {
+      scope.querySelectorAll("[data-autocomplete]").forEach((el) => initAutocomplete(el));
+    }
+
+    document.addEventListener("DOMContentLoaded", () => initAll());
+
+    // Expose for manual instantiation / re-init after dynamic insertion
+    window.AutocompleteSelect = AutocompleteSelect;
+    window.initAutocomplete   = initAutocomplete;
+    window.initAutocompletes  = initAll;
+  })();
+  </script>
+</body>
+</html>
